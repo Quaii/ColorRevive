@@ -12,7 +12,7 @@ ColorRevive is a user-friendly CLI application that colorizes black & white vide
 - Supports various video formats
 - Fast processing with GPU support
 
-## 💾 Installation
+## Installation
 
 1. Clone the repo
 2. Install dependencies via `pip install -r requirements.txt`
