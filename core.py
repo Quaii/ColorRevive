@@ -183,6 +183,11 @@ def update_recent_files(filepath: Union[str, Path], config: Optional[Dict[str, A
     if config is None:
         config = load_config()
     path_str = str(filepath)
+    
+    # Fix for paths without leading slash on macOS
+    if sys.platform == "darwin" and not path_str.startswith("/") and "users/" in path_str.lower():
+        path_str = "/" + path_str
+        
     recent = config.get("recent_files", [])
     if path_str in recent:
         recent.remove(path_str)
