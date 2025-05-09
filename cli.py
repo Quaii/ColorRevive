@@ -17,7 +17,6 @@ import re
 import traceback
 
 import logging
-from tqdm import tqdm
 import subprocess
 import warnings
 # Suppress watermark-related warnings
@@ -26,7 +25,7 @@ warnings.filterwarnings("ignore", ".*watermark.*")
 warnings.filterwarnings("ignore", ".*validation set.*")
 warnings.simplefilter("ignore")
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # Regex to strip ANSI codes
@@ -141,7 +140,7 @@ def status_processing(message):
 
 # Helper functions for UI
 def clear_screen():
-    """Clear the terminal screen"""
+    """Clear the terminal screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def print_centered(text, color=None):
@@ -301,71 +300,100 @@ def display_main_menu():
     choice = input(f"\n{Colors.ACCENT}Enter your choice (1-{len(items)}): {Colors.RESET}")
     return choice
 
-def colorize_video_workflow():
-    """
-    Handle the video colorization workflow with improved single-line progress bar
-    """
-    config = core.load_config()
-
-    # Get input video
-    while True:
-        print_header()
-        
-        # Create a nice framed title
-        title_width = 50
-        padding = (TERM_WIDTH - title_width) // 2
-        pad = " " * padding
-        
-        print(f"{pad}{Colors.HEADING}{Colors.BOLD}┌{'─' * (title_width-2)}┐{Colors.RESET}")
-        print(f"{pad}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}{' Colorize Video':^{title_width-2}}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}")
-        print(f"{pad}{Colors.HEADING}{Colors.BOLD}└{'─' * (title_width-2)}┘{Colors.RESET}\n")
-
-        recent_files = config.get("recent_files", [])
-        if recent_files:
-            print(f"{Colors.SUBTLE}Recent files:{Colors.RESET}")
-            for i, file in enumerate(recent_files[:5], 1):
-                print(f"  {Colors.PRIMARY}{i}.{Colors.RESET} {Path(file).name}")
-            print(f"  {Colors.PRIMARY}n.{Colors.RESET} Enter a new file path")
-            print(f"  {Colors.PRIMARY}b.{Colors.RESET} Back to Main Menu")
-
-            choice = input(f"\n{Colors.ACCENT}Choose a file or enter 'n' for new: {Colors.RESET}")
-            if choice.lower() == 'b':
-                return
-            if choice.lower() == 'n':
-                input_file = input(f"\n{Colors.ACCENT}Enter video file path: {Colors.RESET}")
-            elif choice.isdigit() and 1 <= int(choice) <= len(recent_files[:5]):
-                input_file = recent_files[int(choice) - 1]
-            else:
-                print(status_error("Invalid choice. Please try again."))
-                time.sleep(1)
-                continue
-        else:
-            input_file = input(f"{Colors.ACCENT}Enter video file path: {Colors.RESET}")
-
-        if not Path(input_file).exists():
-            print(status_error("File not found. Please check the path and try again."))
-            time.sleep(2)
-            continue
-
-        video_info = core.get_video_info(input_file)
-        if not video_info:
-            print(status_error("Could not read video info. Is this a valid video file?"))
-            time.sleep(2)
-            continue
-        break
-
-    print_separator()
-    print_video_info(video_info)
-    print_separator()
+def select_video_file():
+    """Select a video file or enter a new path."""
+    print_header()
     
-    # Use a box style for processing options
+    # Create a nice header
+    menu_width = 50
+    padding = (TERM_WIDTH - menu_width) // 2
+    pad = " " * padding
+    
+    print(f"{pad}{Colors.HEADING}{Colors.BOLD}┌{'─' * (menu_width-2)}┐{Colors.RESET}")
+    print(f"{pad}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}{f' Colorize Video ':^{menu_width-2}}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}")
+    print(f"{pad}{Colors.HEADING}{Colors.BOLD}└{'─' * (menu_width-2)}┘{Colors.RESET}\n")
+    
+    print(f"  {Colors.ACCENT}n.{Colors.RESET} Enter a video file path")
+    print(f"  {Colors.ACCENT}b.{Colors.RESET} Back to Main Menu\n")
+    
+    choice = input(f"Choose an option: ")
+    
+    if choice.lower() == 'b':
+        return None
+    
+    if choice.lower() == 'n':
+        file_path = input(f"\nEnter the path to a video file: ")
+        if not file_path:
+            return None
+        
+        # Validate the file exists
+        if not os.path.exists(file_path):
+            print(status_error(f"File not found: {file_path}"))
+            time.sleep(2)
+            return select_video_file()  # Try again
+            
+        # Update recent files in config
+        config = core.load_config()
+        core.update_recent_files(file_path, config)
+        
+        return file_path
+    
+    print(status_error("Invalid selection."))
+    time.sleep(1)
+    return select_video_file()  # Recursive call to try again
+
+def colorize_video_workflow(input_file):
+    """Handle the video colorization workflow."""
+    
+    # Redirect all DeOldify and other logging to a file
+    import logging
+    # Force all logging to go to a file instead of stderr
+    logging.basicConfig(filename='/tmp/colorrevive.log', level=logging.WARNING, force=True)
+    
+    # Store the original stdout and stderr
+    import sys
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    
+    # Clear screen before starting new workflow
+    clear_screen()
+    
+    # Get video info
+    video_info = core.get_video_info(input_file)
+    if not video_info:
+        print(status_error(f"Could not read video information from {input_file}"))
+        input("\nPress Enter to return to main menu...")
+        return
+    
+    # Load config
+    config = core.load_config()
+    
+    # Print header with video info
+    print_header()
+    
+    # Display processing options in a box
     options_width = 70
     padding = (TERM_WIDTH - options_width) // 2
     pad = " " * padding
     
     print(f"{pad}{Colors.HEADING}{Colors.BOLD}┌{'─' * (options_width-2)}┐{Colors.RESET}")
-    print(f"{pad}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}{' Processing Options':^{options_width-2}}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}")
+    print(f"{pad}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}{f' Processing Options ':^{options_width-2}}{Colors.HEADING}{Colors.BOLD}│{Colors.RESET}")
     print(f"{pad}{Colors.HEADING}{Colors.BOLD}└{'─' * (options_width-2)}┘{Colors.RESET}\n")
+
+    # Display video information as simple lines below the processing options box
+    print(f"{pad}  {Colors.SUBTLE}Video:{Colors.RESET} {Path(input_file).name}")
+    
+    # Format video info
+    duration_str = format_time(video_info.get('duration', 0))
+    resolution = f"{video_info.get('width', 0)}x{video_info.get('height', 0)}"
+    frame_count = video_info.get('frame_count', 0)
+    fps = video_info.get('fps', 0)
+    
+    print(f"{pad}  {Colors.SUBTLE}Duration:{Colors.RESET} {duration_str}")
+    print(f"{pad}  {Colors.SUBTLE}Resolution:{Colors.RESET} {resolution}")
+    print(f"{pad}  {Colors.SUBTLE}Frames:{Colors.RESET} {frame_count}")
+    print(f"{pad}  {Colors.SUBTLE}FPS:{Colors.RESET} {fps:.2f}")
+    print()  # Add an empty line for spacing
 
     # Get render factor with validation
     render_factor = config.get("render_factor", 35)
@@ -417,6 +445,8 @@ def colorize_video_workflow():
     core.save_config(config)
     core.update_recent_files(input_file, config)
 
+    # Clear screen before starting processing
+    clear_screen()
     print_header()
     
     # Create a nice processing header
@@ -442,11 +472,21 @@ def colorize_video_workflow():
         'total': video_info.get('frame_count', 100),  # Use actual frame count if available
         'current': 0,
         'message': 'Initializing...',
-        'last_update': time.time()
+        'last_update': time.time(),
+        'temp_messages': []  # Store temporary messages
     }
 
     # Progress callback for core
     def progress_callback(progress, total, message):
+        # Skip unwanted messages completely
+        if (message.startswith("INFO:") or
+            "Apple Silicon" in message or
+            "device: mps" in message or
+            "workers" in message or
+            "Colorizing" in message and "frames using" in message or
+            "Colorization cancelled" in message):
+            return
+            
         if total > 0:
             progress_data['total'] = total
             progress_data['current'] = min(progress, total)
@@ -454,7 +494,7 @@ def colorize_video_workflow():
             progress_data['last_update'] = time.time()
 
     # Completion callback for core
-    def completion_callback(success, message):
+    def completion_callback(success, message, output_file=None):
         process_success[0] = success
         processing_completed[0] = True
         if success:
@@ -465,6 +505,12 @@ def colorize_video_workflow():
     # Processing thread
     def process_thread_func():
         try:
+            # Disable any other logging output from core
+            core.verbose = False
+            if hasattr(core, 'suppress_output'):
+                core.suppress_output = True
+                
+            # Process the video
             core.process_video(
                 input_file, str(output_file), render_factor, artistic,
                 config.get("auto_clean", True),
@@ -485,38 +531,74 @@ def colorize_video_workflow():
     try:
         last_current = -1
         last_message = ""
+        last_frame_num = 0
+        
         # Print initial empty progress bar
-        # (Removed blank line before the progress bar)
         while not process_done.is_set():
             # Skip fake progress during initialization phase
             if progress_data['message'].lower().startswith('initializing'):
                 time.sleep(0.1)
                 continue
+                
+            # Skip unwanted messages
+            message = progress_data['message']
+            if (message.startswith("INFO:") or
+                "Apple Silicon" in message or
+                "device: mps" in message or
+                "workers" in message or
+                "Colorizing" in message and "frames using" in message):
+                time.sleep(0.1)
+                continue
+                
             current = max(0, progress_data['current'])
             total = max(1, progress_data['total'])
-            message = progress_data['message']
 
             # Only update when there's a change
             if current != last_current or message != last_message:
                 elapsed = time.time() - start_time
-                if current > 0:
-                    eta_val = (elapsed / current) * (total - current)
-                    eta_str = format_time(eta_val)
+                
+                # Clear the current line and write the new progress
+                original_stdout.write(CLEAR_LINE)
+                
+                # Create the progress bar without ETA and time information
+                if "Colorizing frame" in message:
+                    # Extract frame number from message if possible
+                    frame_num = 0
+                    try:
+                        frame_part = message.split("frame")[1].strip().split("/")[0]
+                        frame_num = int(frame_part)
+                        last_frame_num = frame_num
+                    except (ValueError, IndexError):
+                        frame_num = last_frame_num
+                    
+                    total_frames = video_info.get('frame_count', total)
+                    display_message = "Colorizing"
+                    
+                    # Calculate percentage based on actual frame number
+                    percentage = min(100, int(100 * frame_num / total_frames)) if total_frames > 0 else 0
+                    
+                    bar = progress_bar(
+                        percentage, 100,  # Use percentage for the bar
+                        prefix=f"{display_message:15}",
+                        suffix=f"[{frame_num}/{total_frames}]",
+                        length=40
+                    )
+                elif not message.startswith("Extracting frames"):  # Skip extraction progress
+                    # Generic progress bar without ETA
+                    bar = progress_bar(
+                        current, total,
+                        prefix=f"{message[:15]:15}",
+                        suffix=f"[{current}/{total}]",
+                        length=40
+                    )
                 else:
-                    eta_str = "calculating..."
+                    # Skip displaying extraction frames progress
+                    time.sleep(0.1)
+                    continue
 
-                # Create the progress bar with elapsed time and ETA
-                bar = progress_bar(
-                    current, total,
-                    prefix=f"{message[:25]:25}",
-                    suffix=f"[{current}/{total}] {elapsed:.1f}s | ETA: {eta_str}",
-                    length=40
-                )
-
-                # Clear the current line and write the new progress bar
-                sys.stdout.write(CLEAR_LINE)
-                sys.stdout.write(bar)
-                sys.stdout.flush()
+                # Write the new progress bar and flush immediately
+                original_stdout.write(bar)
+                original_stdout.flush()
 
                 last_current = current
                 last_message = message
@@ -527,38 +609,71 @@ def colorize_video_workflow():
         elapsed = time.time() - start_time
         bar = progress_bar(
             progress_data['total'], progress_data['total'],
-            prefix=f"{progress_data['message'][:25]:25}",
-            suffix=f"[{progress_data['total']}/{progress_data['total']}] {elapsed:.1f}s | Complete!",
+            prefix=f"{progress_data['message'][:15]:15}",
+            suffix=f"[{progress_data['total']}/{progress_data['total']}] Complete!",
             length=40
         )
-        sys.stdout.write(CLEAR_LINE)
-        sys.stdout.write(bar + "\n\n")  # Add newlines after completion
-        sys.stdout.flush()
+        original_stdout.write(CLEAR_LINE)
+        original_stdout.write(bar + "\n\n")  # Add newlines after completion
+        original_stdout.flush()
 
     except KeyboardInterrupt:
-        print(f"\n{status_warning('Processing cancelled by user')}")
-        core.should_cancel = True
-    # ---- END OF IMPROVED PROGRESS BAR CODE ----
+        # Handle user cancellation
+        original_stdout.write(CLEAR_LINE)  # Clear the current line first
+        original_stdout.write(status_warning("Processing cancelled by user") + "\n")
+        original_stdout.flush()
+        
+        # Set a flag in the core module to stop processing
+        if hasattr(core, 'cancel_processing'):
+            core.cancel_processing = True
+        
+        # Signal the process to stop
+        process_success[0] = False
+        process_done.set()
+        
+        # Suppress any further INFO messages
+        core.progress_callback_func = lambda *args, **kwargs: None
+        
+        # Force terminate any running processes
+        try:
+            # This is a more aggressive approach to ensure processing stops
+            import signal
+            os.kill(os.getpid(), signal.SIGTERM)
+        except:
+            pass
+            
+        # Wait a moment for the process to clean up
+        time.sleep(0.5)
+        
+        original_stdout.write(status_error("Video processing failed!") + "\n")
+        original_stdout.write(f"Failed after {format_time(time.time() - start_time)}\n")
+        original_stdout.flush()
+        
+        # Clear any pending output before showing the prompt
+        original_stdout.write("\nPress Enter to return to main menu...")
+        original_stdout.flush()
+        input()
+        return
+    finally:
+        # IMPORTANT: Restore original stdout and stderr
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
 
-    # Final status
-    elapsed = time.time() - start_time
+    # Processing completed
+    elapsed_time = time.time() - start_time
+    
     if process_success[0]:
-        print(f"{status_success('Video processing completed successfully!')}")
-        print(f"{Colors.SUCCESS}Processing completed in {format_time(elapsed)}{Colors.RESET}")
-        print(f"{Colors.SUBTLE}Output saved to:{Colors.RESET} {output_file}")
-        if config.get("auto_clean", True):
-            print(f"\n{status_info('Cleaning temporary files...')}")
-            core.clean_workspace()
+        print(status_success("Video processing completed successfully!"))
+        print(f"Completed in {format_time(elapsed_time)}")
+        print(f"\nOutput saved to: {output_file}")
     else:
-        print(f"{status_error('Video processing failed!')}")
+        print(status_error("Video processing failed!"))
         if process_exception[0]:
-            print(status_error(f"Error: {process_exception[0]}"))
-        print(f"{Colors.ERROR}Failed after {format_time(elapsed)}{Colors.RESET}")
-
-    input(f"\n{Colors.ACCENT}Press Enter to return to main menu...{Colors.RESET}")
-    # Unregister progress callback
-    core.progress_callback_func = None
-
+            print(f"Error: {process_exception[0]}")
+        print(f"Failed after {format_time(elapsed_time)}")
+    
+    print("\nPress Enter to return to main menu...", end="", flush=True)
+    input()
 def display_settings():
     """Display and modify settings with improved UI"""
     config = core.load_config()
@@ -715,29 +830,35 @@ def display_about():
     input(f"\n{Colors.ACCENT}Press Enter to return to main menu...{Colors.RESET}")
 
 def main():
-    """Main function that runs the CLI"""
-    # Check if setup is needed
+    """Main entry point for the application."""
+    # Check if setup is required
     if not core.check_setup():
         if not setup_environment():
             print(status_error("Setup failed. Please try again."))
             sys.exit(1)
     
-    # Main application loop
-    while True:
-        choice = display_main_menu()
-        
-        if choice == '1':
-            colorize_video_workflow()
-        elif choice == '2':
-            display_settings()
-        elif choice == '3':
-            display_about()
-        elif choice == '4':
-            print(status_info("Exiting DeOldify CLI..."))
-            sys.exit(0)
-        else:
-            print(status_error("Invalid choice. Please try again."))
-            time.sleep(1)
+    try:
+        while True:
+            choice = display_main_menu()
+            
+            if choice == '1':  # Colorize a video
+                input_file = select_video_file()
+                if input_file:
+                    colorize_video_workflow(input_file)
+            elif choice == '2':  # Settings
+                settings_menu()
+            elif choice == '3':  # About
+                show_about()
+            elif choice == '4' or choice.lower() == 'q':  # Exit
+                print_centered("Thank you for using ColorRevive!", Colors.ACCENT)
+                time.sleep(0.5)
+                sys.exit(0)
+            else:
+                print(status_error("Invalid choice. Please try again."))
+                time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nExiting ColorRevive. Goodbye!")
+        sys.exit(0)
 
 if __name__ == "__main__":
     try:

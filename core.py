@@ -11,12 +11,12 @@ import subprocess
 import threading
 import time
 import shutil
+import re  # Add this import for regex pattern matching
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Union, Callable
 
 import logging
 import requests
-from tqdm import tqdm
 
 import torch
 from functools import partial
@@ -29,10 +29,11 @@ except AttributeError:
 
 # Logger for core module
 logger = logging.getLogger("deoldify_core")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 # Add console handler if not already present
 if not logger.handlers:
     console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     logger.addHandler(console_handler)
 
@@ -269,11 +270,10 @@ def download_model_weights() -> bool:
                     continue
                     
                 total = int(resp.headers.get("content-length", 0))
-                with open(dest, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, desc=name) as bar:
+                with open(dest, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                            bar.update(len(chunk))
                 
                 # Validate file content is not HTML (sometimes a 200 response is an error page)
                 with open(dest, "rb") as vf:
@@ -377,12 +377,8 @@ def get_colorizer(artistic: bool = True, for_video: bool = False):
         
         colorizer = creator(**kwargs)
         
-        # Move model to selected device
-        try:
-            colorizer.to(device)
-        except Exception as e:
-            logger.warning(f"Failed to move model to device {device}: {e}")
-            
+        # Remove the explicit device move attempt since DeOldify should handle this internally
+        # The model is already on the correct device from the creator function
         return colorizer
     except ImportError as e:
         logger.error(f"Failed to import DeOldify: {e}")
@@ -461,29 +457,79 @@ def has_audio_stream(file_path: Union[str, Path]) -> bool:
         logger.warning(f"Failed to check for audio in {file_path}")
         return False
 
-def extract_frames(input_file: Union[str, Path], output_dir: Path) -> bool:
-    """Extract frames from video to the output directory."""
-    input_file_str = str(input_file)
+def extract_frames(
+    video_file: Union[str, Path],
+    output_dir: Union[str, Path],
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> bool:
+    """Extract frames from video file to output directory."""
+    video_file = Path(video_file)
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    pattern = output_dir / "frame_%08d.png"
+    
+    # Get video info to know total frames
+    info = get_video_info(video_file)
+    if not info:
+        logger.error(f"Failed to get video info for {video_file}")
+        return False
+    
+    total_frames = info["frame_count"]
+    
+    # Clear any existing frames
+    for existing in output_dir.glob("frame_*.png"):
+        try:
+            existing.unlink()
+        except OSError:
+            pass
     
     try:
-        proc = subprocess.Popen([
-            "ffmpeg", "-i", input_file_str,
-            "-qscale:v", "1", str(pattern)
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Use ffmpeg to extract frames
+        cmd = [
+            "ffmpeg", "-i", str(video_file),
+            "-vf", "fps=fps=24",  # Extract at 24fps to reduce frame count
+            "-q:v", "1",  # High quality
+            str(output_dir / "frame_%08d.png")
+        ]
         
-        while proc.poll() is None:
+        # Use Popen to capture output for progress monitoring
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, bufsize=1
+        )
+        
+        # Monitor progress by counting output files
+        if progress_callback:
+            progress_callback(0, total_frames, "Extracting frames")
+            
+        frame_pattern = re.compile(r'frame=\s*(\d+)')
+        last_reported = 0
+        
+        # Read stderr line by line to parse progress
+        for line in process.stderr:
             if should_cancel:
-                proc.terminate()
-                logger.info("Frame extraction cancelled")
+                process.terminate()
                 return False
-            time.sleep(0.1)
+                
+            # Try to extract frame number from ffmpeg output
+            match = frame_pattern.search(line)
+            if match and progress_callback:
+                current_frame = int(match.group(1))
+                if current_frame > last_reported:
+                    progress_callback(current_frame, total_frames, "Extracting frames")
+                    last_reported = current_frame
         
-        if proc.returncode != 0:
-            stderr = proc.stderr.read().decode("utf-8", errors="replace")
-            logger.error(f"ffmpeg error: {stderr}")
+        # Wait for process to complete
+        process.wait()
+        
+        # Verify frames were extracted
+        extracted_frames = list(output_dir.glob("frame_*.png"))
+        if not extracted_frames:
+            logger.error("No frames were extracted")
             return False
+            
+        # Final progress update with actual frame count
+        if progress_callback:
+            progress_callback(len(extracted_frames), len(extracted_frames), "Frame extraction complete")
             
         return True
     except Exception as e:
@@ -564,28 +610,23 @@ def colorize_frames(
             executor.submit(colorize_frame, colorizer, frame, output_dir / frame.name, render_factor):
             i for i, frame in enumerate(frames)
         }
-        
-        with tqdm(total=len(futures), desc="Colorizing frames", file=sys.stdout) as pbar:
-            for i, future in enumerate(as_completed(futures)):
-                if should_cancel:
-                    executor.shutdown(cancel_futures=True)
-                    logger.info("Colorization cancelled")
-                    return False
-                    
-                success = future.result()
-                if not success:
-                    logger.error(f"Failed to colorize frame {i+1}/{len(frames)}")
-                    return False
-                    
-                pbar.update(1)
+        for i, future in enumerate(as_completed(futures)):
+            if should_cancel:
+                executor.shutdown(cancel_futures=True)
+                logger.info("Colorization cancelled")
+                return False
                 
-                # Report progress
-                if progress_callback:
-                    try:
-                        progress_callback(i+1, len(frames), "Colorizing frames")
-                    except Exception as e:
-                        logger.error(f"Error in progress callback: {e}")
-    
+            success = future.result()
+            if not success:
+                logger.error(f"Failed to colorize frame {i+1}/{len(frames)}")
+                return False
+                
+            # Report progress
+            if progress_callback:
+                try:
+                    progress_callback(i+1, len(frames), "Colorizing frames")
+                except Exception as e:
+                    logger.error(f"Error in progress callback: {e}")
     return True
 
 def assemble_video(
@@ -782,7 +823,7 @@ def process_video(
             temp_colored,
             render_factor,
             progress_callback=lambda current, total, _: progress_callback(
-                2 + (current / total),
+                2 + (current / total) / 2,  # Scale to 50-75% range instead of 50-100%
                 4,
                 f"Colorizing frame {current}/{total}"
             ) if progress_callback else None
